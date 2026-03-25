@@ -1,5 +1,7 @@
 {
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
+  "routes": [
+    { "src": "/process", "dest": "/api/index", "methods": ["POST", "OPTIONS"] },
+    { "src": "/download", "dest": "/api/index", "methods": ["POST", "OPTIONS"] },
+    { "src": "/(.*)", "dest": "/api/index" }
   ]
 }
