@@ -15,43 +15,62 @@ def extract_video_id(url):
     return m.group(1) if m else None
 
 def get_transcript(video_id):
-    """Fetch transcript using youtube-transcript-api v1.x API."""
-    api = YouTubeTranscriptApi()
-    # Strategy 1: direct fetch in English
-    for lang in ['en', 'en-US', 'en-GB']:
-        try:
-            fetched = api.fetch(video_id, languages=[lang])
-            return fetched.to_raw_data()
-        except Exception:
-            pass
-    # Strategy 2: list available transcripts and pick the best one
+    """Fetch transcript - tries yt-dlp first (better bypass), then youtube-transcript-api."""
+    # Strategy 1: yt-dlp with browser-like headers (best YouTube bypass)
     try:
-        tlist = api.list(video_id)
-        # Try manual English transcripts
-        try:
-            t = tlist.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
-            fetched = t.fetch()
-            return fetched.to_raw_data()
-        except Exception:
-            pass
-        # Try auto-generated English
-        try:
-            t = tlist.find_generated_transcript(['en', 'en-US', 'en-GB'])
-            fetched = t.fetch()
-            return fetched.to_raw_data()
-        except Exception:
-            pass
-        # Last resort: grab whatever is available
-        for t in tlist:
-            try:
-                fetched = t.fetch()
-                return fetched.to_raw_data()
-            except Exception:
-                continue
-    except (TranscriptsDisabled, NoTranscriptFound):
-        return None
+        import yt_dlp, urllib.request, json as _json
+        ydl_opts = {
+            'skip_download': True, 'quiet': True, 'no_warnings': True,
+            'extractor_args': {'youtube': {'player_client': ['web']}},
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+        subs = info.get('subtitles', {}); auto = info.get('automatic_captions', {})
+        chosen = None
+        for lang in ['en', 'en-US', 'en-GB', 'en-orig']:
+            if lang in subs: chosen = subs[lang]; break
+            if lang in auto: chosen = auto[lang]; break
+        if not chosen:
+            chosen = next(iter(subs.values()), None) or next(iter(auto.values()), None)
+        if chosen:
+            for fmt in chosen:
+                if fmt.get('ext') in ('json3', 'vtt', 'srv1'):
+                    with urllib.request.urlopen(fmt['url'], timeout=10) as r:
+                        raw = r.read().decode('utf-8')
+                    if fmt.get('ext') == 'json3':
+                        segs = []
+                        for ev in _json.loads(raw).get('events', []):
+                            txt = ''.join(s.get('utf8','') for s in ev.get('segs',[])).strip()
+                            if txt: segs.append({'text': txt, 'start': ev.get('tStartMs',0)/1000})
+                        if segs: return segs
+                    else:
+                        import html as _html
+                        lines = [_html.unescape(l.strip()) for l in raw.split('\n')
+                                 if l.strip() and not re.match(r'^(WEBVTT|NOTE|\d|<)', l.strip())]
+                        if lines: return [{'text': l, 'start': 0} for l in lines]
     except Exception:
-        return None
+        pass
+    # Strategy 2: youtube-transcript-api v1.x fallback
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+        api = YouTubeTranscriptApi()
+        for lang in ['en', 'en-US', 'en-GB']:
+            try: return api.fetch(video_id, languages=[lang]).to_raw_data()
+            except Exception: pass
+        tlist = api.list(video_id)
+        for finder in [tlist.find_manually_created_transcript, tlist.find_generated_transcript]:
+            try: return finder(['en','en-US','en-GB']).fetch().to_raw_data()
+            except Exception: pass
+        for t in tlist:
+            try: return t.fetch().to_raw_data()
+            except Exception: continue
+    except Exception:
+        pass
     return None
 
 def build_full_text(transcript):
