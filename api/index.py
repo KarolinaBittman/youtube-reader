@@ -1,6 +1,7 @@
 import os, re, io
 from flask import Flask, request, jsonify, send_file, Response
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -14,23 +15,44 @@ def extract_video_id(url):
     return m.group(1) if m else None
 
 def get_transcript(video_id):
-    try:
-        tlist = YouTubeTranscriptApi.list_transcripts(video_id)
-        for lang in ['en', 'en-US', 'en-GB']:
-            try:
-                return tlist.find_transcript([lang]).fetch()
-            except Exception:
-                pass
+    """Fetch transcript using youtube-transcript-api v1.x API."""
+    api = YouTubeTranscriptApi()
+    # Strategy 1: direct fetch in English
+    for lang in ['en', 'en-US', 'en-GB']:
         try:
-            return tlist.find_generated_transcript(['en']).fetch()
+            fetched = api.fetch(video_id, languages=[lang])
+            return fetched.to_raw_data()
         except Exception:
             pass
+    # Strategy 2: list available transcripts and pick the best one
+    try:
+        tlist = api.list(video_id)
+        # Try manual English transcripts
+        try:
+            t = tlist.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+            fetched = t.fetch()
+            return fetched.to_raw_data()
+        except Exception:
+            pass
+        # Try auto-generated English
+        try:
+            t = tlist.find_generated_transcript(['en', 'en-US', 'en-GB'])
+            fetched = t.fetch()
+            return fetched.to_raw_data()
+        except Exception:
+            pass
+        # Last resort: grab whatever is available
         for t in tlist:
-            return t.fetch()
+            try:
+                fetched = t.fetch()
+                return fetched.to_raw_data()
+            except Exception:
+                continue
     except (TranscriptsDisabled, NoTranscriptFound):
         return None
     except Exception:
         return None
+    return None
 
 def build_full_text(transcript):
     return ' '.join(seg.get('text', '') for seg in transcript).replace('\n', ' ')
